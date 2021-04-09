@@ -132,7 +132,8 @@ class ImportScripts::Drupal < ImportScripts::Base
         email = user['email'].presence || ''
         unless email[EmailValidator.email_regex]
           @last_invalid_user_id = @last_invalid_user_id + 1
-          email = "invalid_user_#{@last_invalid_user_id}@email.invalid"
+          email = @last_invalid_user_id > 1 ? "invalid_user_#{@last_invalid_user_id}@email.invalid"
+                                            : "invalid_user@email.invalid"
         end
 
         {
@@ -710,6 +711,42 @@ class ImportScripts::Drupal < ImportScripts::Base
       rescue => e
         puts e.message
         puts "Permalink creation failed for id #{topic.id}"
+      end
+    end
+
+    puts '', 'creating permalinks from url_alias...'
+
+    current_count = 0
+    total_count = mysql_query(<<-SQL).first['count']
+      SELECT COUNT(*) count
+      FROM url_alias
+    SQL
+
+    batches(BATCH_SIZE) do |offset|
+      aliases = mysql_query(<<-SQL).to_a
+        SELECT source, alias
+        FROM url_alias
+        LIMIT #{BATCH_SIZE}
+        OFFSET #{offset}
+      SQL
+
+      break if aliases.size < 1
+
+      aliases.each do |row|
+        print_status(current_count += 1, total_count, get_start_time("aliases"))
+
+        entity_type, entity_id = row['source'].split('/')
+
+        if entity_type == 'forum'
+          category_id = category_id_from_imported_category_id(entity_id)
+          Permalink.create(url: row['alias'], category_id: category_id)
+        elsif entity_type == 'node'
+          topic_id = topic_id_from_imported_post_id("nid:#{entity_id}")
+          Permalink.create(url: row['alias'], topic_id: topic_id)
+        elsif entity_type == 'user'
+          user = @lookup.find_username_by_import_id(entity_id)
+          Permalink.create(url: row['alias'], external_url: "/u/#{user.username}") if user.present?
+        end
       end
     end
   end
